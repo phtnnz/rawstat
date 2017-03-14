@@ -6,7 +6,7 @@
 use strict;
 
 our $PROGRAM = 'rawstat';
-our $VERSION = '0.1';
+our $VERSION = '0.2';
 
 our $DCRAW   = "dcraw -c -D -r 1 1 1 1 -4 -t 0";
 
@@ -28,8 +28,8 @@ use locale;
 
 ##### main ###################################################################
 our ($opt_v, $opt_q, $opt_d, $opt_h, $opt_c, $opt_l, $opt_R, $opt_G, $opt_B,
-     $opt_C, $opt_k, $opt_2, $opt_3, $opt_M, $opt_D, $opt_H, $opt_X);
-getopts('vqdhclRGBCk23MDHX');
+     $opt_C, $opt_k, $opt_2, $opt_3, $opt_M, $opt_D, $opt_H, $opt_X, $opt_W);
+getopts('vqdhclRGBCk23MDHXW');
 
 if($opt_h or $#ARGV < 0) {
     print STDERR
@@ -54,6 +54,7 @@ if($opt_h or $#ARGV < 0) {
       "          -D        diff variance mode for matching exp time\n",
       "          -H        output histogram values as CSV\n",
       "          -X        exclude hot pixels (>2500 ADU) from histogram\n",
+      "          -W        write R/G/B data to FILE.[RGB].pgm\n",
       "\n";
     exit 1;
 }
@@ -71,6 +72,12 @@ my $args_sep = {};
 
 die "$PROGRAM: you really don't want to use -D without -C ! ;-)\n"
     if($opt_D and !$opt_C);
+
+die "$PROGRAM: you must use at least one of -R/-G/-B with -W NAME\n"
+    if($opt_W and !$opt_R and !$opt_G and !$opt_B);
+
+die "$PROGRAM: no use for -D with -W NAME ! ;-)\n"
+    if($opt_W and $opt_D);
 
 if($opt_D) {
     ##### diff mode #####
@@ -135,7 +142,7 @@ my $cvar = 1.96 * sqrt(2.0 / $n) * $vvar;
 if($n > 1) {
     print "-" x 79 . "\n" if($opt_v);
     printf
-	"$PROGRAM: overall min=%.2f max=%.2f mean=%.2f mean var=%.2f conf95=[%.2f - %.2f]\n",
+	"$PROGRAM: overall min=%.2f max=%.2f mean=%.2f mean var=%.2f conf95=[%.2f ... %.2f]\n",
 	$min, $max, $mmean, $mvar, $mvar-$cvar, $mvar+$cvar;
 
 #    print "$PROGRAM: overall min=$min max=$max mean=$mmean mean var=$mvar conf95 var=+/-$cvar\n"
@@ -222,7 +229,10 @@ sub new {
     $self->{data}->{ALL} = [] unless($opt_R or $opt_G or $opt_B);
     $self->{temp}        = undef;
     $self->{iso}         = undef;
-
+    $self->{width}       = undef;
+    $self->{height}      = undef;
+    $self->{file}        = undef;
+    
     my $file = shift;
     $self->process_file($file) if($file);
 
@@ -246,7 +256,8 @@ sub process_file {
     my $sensortemp = 0;
     if($file =~ /_([+\-]\d+)c_/) {
 	$sensortemp = $1 + 0;
-	print "RawData: sensor temp=$sensortemp\n" if($opt_v);
+	print "         sensor temp=$sensortemp\n" if($opt_v);
+	$self->{temp} = $sensortemp;
     }
 
     my $fh;
@@ -275,7 +286,10 @@ sub process_file {
     my ($max) = split (' ', $in); 
 
     print "RawData: image width=$width, height=$height, max=$max\n" if($opt_d);
-
+    $self->{width} = $width;
+    $self->{height} = $height;
+    $self->{file} = $file;
+    
     my ($wcenter, $hcenter) = (int($width/4)*2, int($height/4)*2);
     print "RawData: center w=$wcenter, h=$hcenter\n" if($opt_d and $opt_C);
 
@@ -322,6 +336,35 @@ sub process_file {
 
     return 1;
 }
+
+sub write_pgm {
+    my $self = shift;
+
+    my ($key) = @_;
+
+    return unless defined($self->{data}->{$key});
+    
+    my $name = basename($self->{file}) . ".$key.pgm";
+    print "RawData: writing raw data $name\n" if($opt_v);
+
+    my $fh = FileHandle->new($name, "w")
+	|| die "RawData: can't write to $name: $!";
+    $fh->binmode;
+
+    my $width = $self->{width} / 2;
+    my $height = int( $key eq "G" ? $self->{height} : $self->{height} / 2 );
+
+    print $fh "P5\n# raw data channel $key\n$width $height\n65535\n";
+    
+    my @data = @{$self->{data}->{$key}};
+    my $size = @data;
+    print "RawData: $size 16bit values\n" if($opt_d);
+
+    print $fh pack("n$size", @data);
+    
+    $fh->close();
+}
+
 
 
 
@@ -423,6 +466,13 @@ sub process_file {
 	push @{$self->{var}} , $var;
 
 	histo_data($data->{$k}) if($opt_H);
+    }
+
+    # dump raw data to single channel pgm file for further analysis
+    if($opt_W) {
+	for my $k ("R", "G", "B") {
+	    $rawdata->write_pgm($k);
+	}
     }
 }
 
