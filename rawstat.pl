@@ -5,8 +5,8 @@
 
 use strict;
 
-our $PROGRAM = 'rawstat3';
-our $VERSION = '0.0';
+our $PROGRAM = 'rawstat';
+our $VERSION = '0.2';
 
 our $DCRAW   = "dcraw -c -D -r 1 1 1 1 -4 -t 0";
 
@@ -20,13 +20,16 @@ use DirHandle;
 use Data::Dumper;
 use List::Util;
 use File::Basename;
+use POSIX qw(setlocale LC_NUMERIC);
+use locale;
 
+#setlocale LC_NUMERIC, "";
 
 
 ##### main ###################################################################
 our ($opt_v, $opt_q, $opt_d, $opt_h, $opt_c, $opt_l, $opt_R, $opt_G, $opt_B,
-     $opt_C, $opt_k, $opt_2, $opt_3, $opt_M, $opt_D);
-getopts('vqdhclRGBCk23MD');
+     $opt_C, $opt_k, $opt_2, $opt_3, $opt_M, $opt_D, $opt_H, $opt_X, $opt_W);
+getopts('vqdhclRGBCk23MDHXW');
 
 if($opt_h or $#ARGV < 0) {
     print STDERR
@@ -47,8 +50,11 @@ if($opt_h or $#ARGV < 0) {
       "          -C        crop center 100x100 pixel\n",
       "          -2        set bias for 5D2\n",
       "          -3        set bias for 5D3\n",
-      "          -M        don't match exp time in file name\n",
+      "          -M        match exp time in file name\n",
       "          -D        diff variance mode for matching exp time\n",
+      "          -H        output histogram values as CSV\n",
+      "          -X        exclude hot pixels (>2500 ADU) from histogram\n",
+      "          -W        write R/G/B data to FILE.[RGB].pgm\n",
       "\n";
     exit 1;
 }
@@ -67,6 +73,12 @@ my $args_sep = {};
 die "$PROGRAM: you really don't want to use -D without -C ! ;-)\n"
     if($opt_D and !$opt_C);
 
+die "$PROGRAM: you must use at least one of -R/-G/-B with -W NAME\n"
+    if($opt_W and !$opt_R and !$opt_G and !$opt_B);
+
+die "$PROGRAM: no use for -D with -W NAME ! ;-)\n"
+    if($opt_W and $opt_D);
+
 if($opt_D) {
     ##### diff mode #####
     for my $arg (@ARGV) {
@@ -76,7 +88,7 @@ if($opt_D) {
 		my $key;
 		$key = $1 if($file =~ /$MATCH1/);
 		$key = $1 if($file =~ /$MATCH2/);
-		$key = "none" if($opt_M);
+		$key = "none" unless($opt_M);
 		if($key) {
 #		print "file=", basename($file), " match=$key\n";
 		    $args_sep->{$1} = [] unless defined($args_sep->{$1});
@@ -125,12 +137,18 @@ my ($min, $max, $mmean, $mvar, $vvar, $n);
 (undef,undef,$mvar,$vvar,$n) = $rawstat->stat_all("var");
 
 my ($a, $b, $b_mod) = $rawstat->regression();
-my $cvar = 1.96 * sqrt($vvar / $n); # nicht wirklich korrekt! ;-)
+my $cvar = 1.96 * sqrt(2.0 / $n) * $vvar;
 
-print "-" x 79 . "\n" if($opt_v);
-print "$PROGRAM: overall min=$min max=$max mean=$mmean mean var=$mvar conf95 var=+/-$cvar\n"
-    . "$PROGRAM: regression a=$a (bias) b=$b (e-/ADU)\n";
-print "$PROGRAM: with fixed bias=$BIAS b=$b_mod (e-/ADU)\n" if($b_mod);
+if($n > 1) {
+    print "-" x 79 . "\n" if($opt_v);
+    printf
+	"$PROGRAM: overall min=%.2f max=%.2f mean=%.2f mean var=%.2f conf95=[%.2f ... %.2f]\n",
+	$min, $max, $mmean, $mvar, $mvar-$cvar, $mvar+$cvar;
+
+#    print "$PROGRAM: overall min=$min max=$max mean=$mmean mean var=$mvar conf95 var=+/-$cvar\n"
+#	. "$PROGRAM: regression a=$a (bias) b=$b (e-/ADU)\n";
+#    print "$PROGRAM: with fixed bias=$BIAS b=$b_mod (e-/ADU)\n" if($b_mod);
+}
 
 exit 0;
 
@@ -158,6 +176,8 @@ sub do_dir {
     my $dh = DirHandle->new($dir)
 	|| die "$PROGRAM: can't open directory $dir: $!";
 
+    print "$PROGRAM: processing dir $dir\n" if($opt_d);
+
     my @files = sort grep !/^\./, $dh->read;
     my $f;
 
@@ -171,7 +191,13 @@ sub do_dir {
 sub do_file {
     my ($file) = @_;
 
-    $rawstat->process_file($file);
+    if($file =~ /\.(cr2|pgm)$/i) {
+	print "$PROGRAM: processing file $file\n" if($opt_d);
+	$rawstat->process_file($file);
+    }
+    else {
+	print "$PROGRAM: skipping file $file\n" if($opt_d);
+    }
 }
 
 
@@ -203,7 +229,10 @@ sub new {
     $self->{data}->{ALL} = [] unless($opt_R or $opt_G or $opt_B);
     $self->{temp}        = undef;
     $self->{iso}         = undef;
-
+    $self->{width}       = undef;
+    $self->{height}      = undef;
+    $self->{file}        = undef;
+    
     my $file = shift;
     $self->process_file($file) if($file);
 
@@ -227,7 +256,8 @@ sub process_file {
     my $sensortemp = 0;
     if($file =~ /_([+\-]\d+)c_/) {
 	$sensortemp = $1 + 0;
-	print "RawData: sensor temp=$sensortemp\n" if($opt_v);
+	print "         sensor temp=$sensortemp\n" if($opt_v);
+	$self->{temp} = $sensortemp;
     }
 
     my $fh;
@@ -256,7 +286,10 @@ sub process_file {
     my ($max) = split (' ', $in); 
 
     print "RawData: image width=$width, height=$height, max=$max\n" if($opt_d);
-
+    $self->{width} = $width;
+    $self->{height} = $height;
+    $self->{file} = $file;
+    
     my ($wcenter, $hcenter) = (int($width/4)*2, int($height/4)*2);
     print "RawData: center w=$wcenter, h=$hcenter\n" if($opt_d and $opt_C);
 
@@ -303,6 +336,35 @@ sub process_file {
 
     return 1;
 }
+
+sub write_pgm {
+    my $self = shift;
+
+    my ($key) = @_;
+
+    return unless defined($self->{data}->{$key});
+    
+    my $name = basename($self->{file}) . ".$key.pgm";
+    print "RawData: writing raw data $name\n" if($opt_v);
+
+    my $fh = FileHandle->new($name, "w")
+	|| die "RawData: can't write to $name: $!";
+    $fh->binmode;
+
+    my $width = $self->{width} / 2;
+    my $height = int( $key eq "G" ? $self->{height} : $self->{height} / 2 );
+
+    print $fh "P5\n# raw data channel $key\n$width $height\n65535\n";
+    
+    my @data = @{$self->{data}->{$key}};
+    my $size = @data;
+    print "RawData: $size 16bit values\n" if($opt_d);
+
+    print $fh pack("n$size", @data);
+    
+    $fh->close();
+}
+
 
 
 
@@ -359,7 +421,9 @@ sub process_file12_diff {
 
 #	print "diff mean=$mdiff\n";
 
-	print "RawStat: diff2 ($k) min=$min max=$max mean=$mean var=$var\n"
+	printf
+	    "RawStat: diff2 ($k) min=%.0f max=%.0f mean=%.2f var=%.2f\n",
+	    $min, $max, $mean, $var
 	    if($opt_v);
 	print basename($file1), "/", basename($file2)
 	    , ",$k,$min,$max,$mean,$var\n"
@@ -384,6 +448,8 @@ sub process_file {
     my $self = shift;
     my $file = shift;
 
+    print "RawStat: $file\n" if($opt_d);
+
     my $rawdata = new RawData($file);
     my $data    = $rawdata->get_data();
 
@@ -398,6 +464,15 @@ sub process_file {
 	push @{$self->{max}} , $max;
 	push @{$self->{mean}}, $mean;
 	push @{$self->{var}} , $var;
+
+	histo_data($data->{$k}) if($opt_H);
+    }
+
+    # dump raw data to single channel pgm file for further analysis
+    if($opt_W) {
+	for my $k ("R", "G", "B") {
+	    $rawdata->write_pgm($k);
+	}
     }
 }
 
@@ -432,7 +507,7 @@ sub stat_data {
     }
 
     my $mean   = $sum / $n;
-    my $var    = ($sum2 - $sum*$sum/$n) / ($n - 1);
+    my $var    = $n > 1 ? ($sum2 - $sum*$sum/$n) / ($n - 1) : 0;
 
     return ($min, $max, $mean, $var, $n);
 }    
@@ -444,6 +519,8 @@ sub regression {
     my $y = $self->{mean};
     my $n = @$x;
     my ($prod, $sumx, $sumy, $sumx2);
+
+    return (0, 0, 0) unless($n > 1);
     
     for my $i (0..$n-1) {
 	$prod  += $x->[$i] * $y->[$i];
@@ -464,9 +541,20 @@ sub regression {
     return ($a, $b, $b_mod);
 }
 
-    
+sub histo_data {
+    my ($data) = @_;
 
-1;
+    my $x;
+    my $histo = {};
 
+    for $x (@$data) {
+	next if($opt_X and $x > 2500);
+	$histo->{$x}++;
+    }
+    print "ADU,Occurrence\n";
+    for $x (sort { $RawStat::a <=> $RawStat::b } keys %$histo) {
+	print $x, ",", $histo->{$x}, "\n";
+    }
+}
 
 
