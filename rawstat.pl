@@ -6,7 +6,7 @@
 use strict;
 
 our $PROGRAM = 'rawstat';
-our $VERSION = '0.2';
+our $VERSION = '0.3';
 
 our $DCRAW   = "dcraw -c -D -r 1 1 1 1 -4 -t 0";
 our $MAGICK_CONVERT = "magick convert";
@@ -35,7 +35,7 @@ getopts('vqdhclRGBCk23MDHXW');
 if($opt_h or $#ARGV < 0) {
     print STDERR
       "\n",
-      "$PROGRAM --- Raw image statistics\n",
+      "$PROGRAM $VERSION --- Raw image statistics\n",
       "\n",
       "Usage:   $PROGRAM [-vqdhclC23M] PGM|CR2|FITS|TIFF-FILE1 FILE2 ...\n",
       "\n",
