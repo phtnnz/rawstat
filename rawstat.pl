@@ -6,9 +6,10 @@
 use strict;
 
 our $PROGRAM = 'rawstat';
-our $VERSION = '0.2';
+our $VERSION = '0.3';
 
 our $DCRAW   = "dcraw -c -D -r 1 1 1 1 -4 -t 0";
+our $MAGICK_CONVERT = "magick convert";
 
 our $MATCH1  = "-(\\d+_\\d+)_sec";
 our $MATCH2  = "_Tv(\\d+-\\d+)_";
@@ -34,9 +35,9 @@ getopts('vqdhclRGBCk23MDHXW');
 if($opt_h or $#ARGV < 0) {
     print STDERR
       "\n",
-      "$PROGRAM --- Raw image statistics\n",
+      "$PROGRAM $VERSION --- Raw image statistics\n",
       "\n",
-      "Usage:   $PROGRAM [-vqdhclC23M] PGM|CR2-FILE1 FILE2 ...\n",
+      "Usage:   $PROGRAM [-vqdhclC23M] PGM|CR2|FITS|TIFF-FILE1 FILE2 ...\n",
       "\n",
       "Options:  -v        verbose\n",
       "          -q        quiet, ie no messages\n",
@@ -191,7 +192,7 @@ sub do_dir {
 sub do_file {
     my ($file) = @_;
 
-    if($file =~ /\.(cr2|pgm)$/i) {
+    if($file =~ /\.(cr2|pgm|fits?|tiff?)$/i) {
 	print "$PROGRAM: processing file $file\n" if($opt_d);
 	$rawstat->process_file($file);
     }
@@ -262,11 +263,23 @@ sub process_file {
 
     my $fh;
     if($file =~ /\.pgm$/i) {
+	print "RawData: file type PGM\n" if($opt_d);
 	$fh = FileHandle->new($file, "r")
 	    || die "RawData: can't open $file: $!";
     }
     elsif($file =~ /\.cr2$/i) {
-	$fh = FileHandle->new("$DCRAW $file|")
+	print "RawData: file type CR2\n" if($opt_d);
+	$fh = FileHandle->new("$DCRAW \"$file\"|")
+	    || die "RawData: can't open pipe to dcraw for $file: $!";
+    }
+    elsif($file =~ /\.fits?$/i) {
+	print "RawData: file type FITS\n" if($opt_d);
+	$fh = FileHandle->new("$MAGICK_CONVERT \"$file\" -depth 16 pgm:-|")
+	    || die "RawData: can't open pipe to dcraw for $file: $!";
+    }
+    elsif($file =~ /\.tiff?$/i) {
+	print "RawData: file type TIFF\n" if($opt_d);
+	$fh = FileHandle->new("$MAGICK_CONVERT \"$file\" pgm:-|")
 	    || die "RawData: can't open pipe to dcraw for $file: $!";
     }
     else {
@@ -426,7 +439,7 @@ sub process_file12_diff {
 	    $min, $max, $mean, $var
 	    if($opt_v);
 	print basename($file1), "/", basename($file2)
-	    , ",$k,$min,$max,$mean,$var\n"
+	    , ";$k;$min;$max;$mean;$var\n"
 	    if($opt_c);
 	push @{$self->{min}} , $min;
 	push @{$self->{max}} , $max;
@@ -458,7 +471,7 @@ sub process_file {
 	my ($min, $max, $mean, $var) = stat_data($data->{$k});
 	print "RawStat: ($k) min=$min max=$max mean=$mean var=$var\n"
 	    if($opt_v);
-	print basename($file), ",$k,$min,$max,$mean,$var\n"
+	print basename($file), ";$k;$min;$max;$mean;$var\n"
 	    if($opt_c);
 	push @{$self->{min}} , $min;
 	push @{$self->{max}} , $max;
